@@ -26,20 +26,22 @@ function connectWebSocket() {
         console.log('Received command:', msg);
         
         if (msg.type === 'start-recording') {
-            const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-            if (tabs[0]) {
-                const result = await startRecording(tabs[0]);
-                // Python側に結果を送信
-                websocket.send(JSON.stringify({
-                    type: 'response',
-                    command: 'start-recording',
-                    success: result,
-                    message: result ? 'Recording started' : 'Failed to start recording'
-                }));
-            }
+            // 最後に操作されたChromeウィンドウの最後のタブを取得
+            const windows = await chrome.windows.getAll({populate: true, windowTypes: ['normal']});
+            const lastWindow = windows.sort((a, b) => b.id - a.id)[0]; // 最後のウィンドウ
+            const lastTab = lastWindow.tabs[lastWindow.tabs.length - 1]; // そのウィンドウの最後のタブ
+            
+            console.log(`Recording tab: ${lastTab.url} (Tab ID: ${lastTab.id})`);
+            
+            const result = await startRecording(lastTab);
+            websocket.send(JSON.stringify({
+                type: 'response',
+                command: 'start-recording',
+                success: result,
+                message: result ? `Recording started on ${lastTab.url}` : 'Failed to start recording'
+            }));
         } else if (msg.type === 'stop-recording') {
             const result = stopRecording();
-            // Python側に結果を送信
             websocket.send(JSON.stringify({
                 type: 'response',
                 command: 'stop-recording', 
@@ -63,6 +65,7 @@ function connectWebSocket() {
     };
 }
 
+// 他の関数は変更なし
 function startConnectionLoop() {
     if (connectionInterval) {
         return;
@@ -83,7 +86,7 @@ function initializeExtension() {
 async function startRecording(tab) {
   if (currentRecording) {
     console.log("Recording already in progress");
-    return false; // 失敗を返す
+    return false;
   }
 
   const existingContexts = await chrome.runtime.getContexts({});
@@ -110,10 +113,10 @@ async function startRecording(tab) {
       target: 'offscreen',
       data: streamId
     });
-    return true; // 成功を返す
+    return true;
   } catch (error) {
     console.error("Failed to start recording:", error);
-    return false; // 失敗を返す
+    return false;
   }
 }
 
@@ -124,9 +127,9 @@ function stopRecording() {
       target: 'offscreen'
     });
     currentRecording = null;
-    return true; // 成功を返す
+    return true;
   }
-  return false; // 録画していない場合は失敗を返す
+  return false;
 }
 
 chrome.runtime.onStartup.addListener(initializeExtension);
