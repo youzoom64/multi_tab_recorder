@@ -1,146 +1,230 @@
+// デバッグ用のログ関数（必ず表示される）
+function debugLog(...args) {
+    console.log('[DEBUG]', new Date().toISOString(), ...args);
+    console.error('[LOG]', ...args); // エラーコンソールにも出力
+}
+
 let websocket = null;
 let currentRecording = null;
-let connectionInterval = null;
-let isConnecting = false;
 
 function connectWebSocket() {
-    if ((websocket && websocket.readyState === WebSocket.OPEN) || isConnecting) {
+    debugLog('=== connectWebSocket called ===');
+    
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+        debugLog('WebSocket already connected');
         return;
     }
 
-    isConnecting = true;
-    console.log('Trying WebSocket connection...');
+    debugLog('Creating WebSocket connection to ws://127.0.0.1:8799');
     websocket = new WebSocket('ws://127.0.0.1:8799');
     
     websocket.onopen = () => {
-        console.log('WebSocket connected!');
-        isConnecting = false;
-        if (connectionInterval) {
-            clearInterval(connectionInterval);
-            connectionInterval = null;
-        }
+        debugLog('✓ WebSocket connected successfully!');
     };
     
     websocket.onmessage = async (event) => {
-        const msg = JSON.parse(event.data);
-        console.log('Received command:', msg);
+        debugLog('✓ Message received:', event.data);
         
-        if (msg.type === 'start-recording') {
-            // 最後に操作されたChromeウィンドウの最後のタブを取得
-            const windows = await chrome.windows.getAll({populate: true, windowTypes: ['normal']});
-            const lastWindow = windows.sort((a, b) => b.id - a.id)[0]; // 最後のウィンドウ
-            const lastTab = lastWindow.tabs[lastWindow.tabs.length - 1]; // そのウィンドウの最後のタブ
+        try {
+            const msg = JSON.parse(event.data);
+            debugLog('✓ Parsed message:', msg);
             
-            console.log(`Recording tab: ${lastTab.url} (Tab ID: ${lastTab.id})`);
-            
-            const result = await startRecording(lastTab);
-            websocket.send(JSON.stringify({
-                type: 'response',
-                command: 'start-recording',
-                success: result,
-                message: result ? `Recording started on ${lastTab.url}` : 'Failed to start recording'
-            }));
-        } else if (msg.type === 'stop-recording') {
-            const result = stopRecording();
-            websocket.send(JSON.stringify({
-                type: 'response',
-                command: 'stop-recording', 
-                success: result,
-                message: result ? 'Recording stopped' : 'No recording to stop'
-            }));
+            if (msg.type === 'start-recording') {
+                debugLog('Processing start-recording command');
+                await handleStartRecording();
+            } else if (msg.type === 'stop-recording') {
+                debugLog('Processing stop-recording command');
+                const result = stopRecording();
+                sendResponse(result, result ? 'Recording stopped' : 'No recording to stop');
+            }
+        } catch (error) {
+            debugLog('✗ Error processing message:', error.message);
         }
     };
     
     websocket.onclose = () => {
-        console.log('WebSocket disconnected');
+        debugLog('✗ WebSocket disconnected');
         websocket = null;
-        isConnecting = false;
-        startConnectionLoop();
+        setTimeout(() => connectWebSocket(), 3000);
     };
     
     websocket.onerror = (error) => {
-        console.log('WebSocket connection failed');
-        websocket = null;
-        isConnecting = false;
+        debugLog('✗ WebSocket error:', error);
     };
 }
 
-// 他の関数は変更なし
-function startConnectionLoop() {
-    if (connectionInterval) {
-        return;
-    }
+async function handleStartRecording() {
+    debugLog('=== handleStartRecording started ===');
     
-    console.log('Starting connection loop');
-    connectionInterval = setInterval(() => {
-        connectWebSocket();
-    }, 10000);
+    try {
+        // 全ウィンドウを取得
+        const windows = await chrome.windows.getAll({populate: true, windowTypes: ['normal']});
+        debugLog(`Found ${windows.length} windows`);
+        
+        if (windows.length === 0) {
+            debugLog('No windows found');
+            sendResponse(false, 'No windows available');
+            return;
+        }
+        
+        // 全タブを収集
+        const allTabs = [];
+        for (const window of windows) {
+            debugLog(`Window ${window.id}: ${window.tabs.length} tabs`);
+            allTabs.push(...window.tabs);
+        }
+        
+        debugLog(`Total tabs found: ${allTabs.length}`);
+        
+        // 録画可能なタブをフィルタリング
+        const validTabs = allTabs.filter(tab => {
+            debugLog(`Tab ${tab.id} details:`, {
+                id: tab.id,
+                url: tab.url,
+                title: tab.title,
+                status: tab.status,
+                active: tab.active,
+                windowId: tab.windowId
+            });
+            
+            if (!tab.url || typeof tab.url !== 'string') {
+                debugLog(`Tab ${tab.id}: URL is ${tab.url} (type: ${typeof tab.url})`);
+                return false;
+            }
+            
+            const isValidUrl = !tab.url.startsWith('chrome://') && 
+                              !tab.url.startsWith('chrome-extension://') &&
+                              !tab.url.startsWith('edge://') &&
+                              !tab.url.startsWith('about:');
+            
+            debugLog(`Tab ${tab.id}: ${tab.url} - Valid: ${isValidUrl}, LastAccessed: ${tab.lastAccessed}`);
+            return isValidUrl;
+        });
+        
+        debugLog(`Found ${validTabs.length} valid tabs`);
+        
+        if (validTabs.length === 0) {
+            debugLog('No valid tabs found');
+            sendResponse(false, 'No recordable tabs found. Please open a website.');
+            return;
+        }
+        
+        // 最後にアクセスしたタブを選択
+        const targetTab = validTabs.sort((a, b) => b.lastAccessed - a.lastAccessed)[0];
+        
+        debugLog(`Selected tab: ${targetTab.id} - ${targetTab.url} (LastAccessed: ${targetTab.lastAccessed})`);
+        
+        const result = await startRecording(targetTab);
+        debugLog(`Recording result: ${result}`);
+        
+        sendResponse(result, result ? `Recording started on ${targetTab.url}` : 'Failed to start recording');
+        
+    } catch (error) {
+        debugLog('Error in handleStartRecording:', error.message);
+        debugLog('Error stack:', error.stack);
+        sendResponse(false, `Error: ${error.message}`);
+    }
 }
 
-function initializeExtension() {
-    console.log('Extension initialized');
-    connectWebSocket();
-    startConnectionLoop();
+function sendResponse(success, message) {
+    debugLog(`Sending response: success=${success}, message=${message}`);
+    
+    if (websocket && websocket.readyState === WebSocket.OPEN) {
+        const response = JSON.stringify({
+            type: 'response',
+            success: success,
+            message: message
+        });
+        websocket.send(response);
+    } else {
+        debugLog('WebSocket not available for response');
+    }
 }
 
 async function startRecording(tab) {
-  if (currentRecording) {
-    console.log("Recording already in progress");
-    return false;
-  }
+    debugLog(`Starting recording for tab ${tab.id}: ${tab.url}`);
+    
+    if (currentRecording) {
+        debugLog("Recording already in progress");
+        return false;
+    }
 
-  const existingContexts = await chrome.runtime.getContexts({});
-  const offscreenDocument = existingContexts.find(
-    (c) => c.contextType === 'OFFSCREEN_DOCUMENT'
-  );
+    try {
+        // まずタブをアクティブ化
+        debugLog('Activating target tab...');
+        await chrome.tabs.update(tab.id, { active: true });
+        await chrome.windows.update(tab.windowId, { focused: true });
+        
+        // 少し待機（タブのアクティブ化を確実にする）
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Offscreen document作成
+        const existingContexts = await chrome.runtime.getContexts({});
+        const offscreenDocument = existingContexts.find(c => c.contextType === 'OFFSCREEN_DOCUMENT');
 
-  if (!offscreenDocument) {
-    await chrome.offscreen.createDocument({
-      url: 'offscreen.html',
-      reasons: ['USER_MEDIA'],
-      justification: 'Recording from chrome.tabCapture API',
-    });
-  }
+        if (!offscreenDocument) {
+            debugLog('Creating offscreen document...');
+            await chrome.offscreen.createDocument({
+                url: 'offscreen.html',
+                reasons: ['USER_MEDIA'],
+                justification: 'Recording from chrome.tabCapture API',
+            });
+        }
 
-  try {
-    const streamId = await chrome.tabCapture.getMediaStreamId({
-      targetTabId: tab.id
-    });
+        debugLog('Getting media stream ID...');
+        const streamId = await chrome.tabCapture.getMediaStreamId({
+            targetTabId: tab.id
+        });
 
-    currentRecording = tab.id;
-    chrome.runtime.sendMessage({
-      type: 'start-recording',
-      target: 'offscreen',
-      data: streamId
-    });
-    return true;
-  } catch (error) {
-    console.error("Failed to start recording:", error);
-    return false;
-  }
+        debugLog(`Got stream ID: ${streamId}`);
+        currentRecording = tab.id;
+        
+        chrome.runtime.sendMessage({
+            type: 'start-recording',
+            target: 'offscreen',
+            data: streamId
+        });
+        
+        debugLog('Recording initiated successfully');
+        return true;
+        
+    } catch (error) {
+        debugLog('Failed to start recording:', error.message);
+        currentRecording = null;
+        return false;
+    }
 }
 
 function stopRecording() {
-  if (currentRecording) {
-    chrome.runtime.sendMessage({
-      type: 'stop-recording',
-      target: 'offscreen'
-    });
-    currentRecording = null;
-    return true;
-  }
-  return false;
+    debugLog('Stopping recording');
+    if (currentRecording) {
+        chrome.runtime.sendMessage({
+            type: 'stop-recording',
+            target: 'offscreen'
+        });
+        currentRecording = null;
+        return true;
+    }
+    debugLog('No recording to stop');
+    return false;
 }
 
-chrome.runtime.onStartup.addListener(initializeExtension);
-chrome.runtime.onInstalled.addListener(initializeExtension);
+// 初期化
+debugLog('=== Background script loaded ===');
+connectWebSocket();
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "start-button") {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      startRecording(tabs[0]);
-    });
-  } else if (msg.type === "stop-button") {
-    stopRecording();
-  }
+// ポップアップからのメッセージ処理
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    debugLog('Message from popup:', msg.type);
+    
+    if (msg.type === "start-button") {
+        chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+            const result = await startRecording(tabs[0]);
+            sendResponse(result);
+        });
+        return true;
+    } else if (msg.type === "stop-button") {
+        const result = stopRecording();
+        sendResponse(result);
+    }
 });
