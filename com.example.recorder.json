@@ -1,0 +1,7 @@
+{
+  "name": "com.example.recorder",
+  "description": "Tab Recorder Native Host",
+  "path": "C:\\project_root\\app_workspaces\\multi-tab-recorder\\recorder_host.bat",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://kifmdmbpfdioijjajjhikjjncpekmllj/"]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "Simple Tab Recorder",
+  "manifest_version": 3,
+  "version": "1.0",
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "nativeMessaging",
+    "activeTab"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
