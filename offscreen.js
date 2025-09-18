@@ -1,3 +1,5 @@
+let currentRecorder = null;
+
 chrome.runtime.onMessage.addListener(async (message) => {
   if (message.target !== 'offscreen') return;
   
@@ -8,14 +10,14 @@ chrome.runtime.onMessage.addListener(async (message) => {
         video: { mandatory: { chromeMediaSource: "tab", chromeMediaSourceId: message.data } }
       });
 
-      const recorder = new MediaRecorder(media);
+      currentRecorder = new MediaRecorder(media);
       let chunks = [];
       
-      recorder.ondataavailable = (event) => {
+      currentRecorder.ondataavailable = (event) => {
         chunks.push(event.data);
       };
       
-      recorder.onstop = () => {
+      currentRecorder.onstop = () => {
         const blob = new Blob(chunks, { type: 'video/webm' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -23,13 +25,19 @@ chrome.runtime.onMessage.addListener(async (message) => {
         a.download = `recording-${Date.now()}.webm`;
         a.click();
         URL.revokeObjectURL(url);
+        currentRecorder = null;
       };
       
-      recorder.start();
+      currentRecorder.start();
       console.log("Recording started");
       
     } catch (error) {
       console.error("Recording error:", error.name, error.message);
+    }
+  } else if (message.type === 'stop-recording') {
+    if (currentRecorder && currentRecorder.state === 'recording') {
+      currentRecorder.stop();
+      console.log("Recording stopped");
     }
   }
 });
