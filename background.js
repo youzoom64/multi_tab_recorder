@@ -1,22 +1,20 @@
 let websocket = null;
 let currentRecording = null;
 let connectionInterval = null;
-let isConnecting = false; // 接続中フラグを追加
+let isConnecting = false;
 
 function connectWebSocket() {
-    // 既に接続済みまたは接続中なら何もしない
     if ((websocket && websocket.readyState === WebSocket.OPEN) || isConnecting) {
         return;
     }
 
     isConnecting = true;
     console.log('Trying WebSocket connection...');
-    websocket = new WebSocket('ws://localhost:8799');
+    websocket = new WebSocket('ws://127.0.0.1:8799');
     
     websocket.onopen = () => {
         console.log('WebSocket connected!');
         isConnecting = false;
-        // 接続成功したら定期試行を停止
         if (connectionInterval) {
             clearInterval(connectionInterval);
             connectionInterval = null;
@@ -30,10 +28,24 @@ function connectWebSocket() {
         if (msg.type === 'start-recording') {
             const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
             if (tabs[0]) {
-                startRecording(tabs[0]);
+                const result = await startRecording(tabs[0]);
+                // Python側に結果を送信
+                websocket.send(JSON.stringify({
+                    type: 'response',
+                    command: 'start-recording',
+                    success: result,
+                    message: result ? 'Recording started' : 'Failed to start recording'
+                }));
             }
         } else if (msg.type === 'stop-recording') {
-            stopRecording();
+            const result = stopRecording();
+            // Python側に結果を送信
+            websocket.send(JSON.stringify({
+                type: 'response',
+                command: 'stop-recording', 
+                success: result,
+                message: result ? 'Recording stopped' : 'No recording to stop'
+            }));
         }
     };
     
@@ -41,7 +53,6 @@ function connectWebSocket() {
         console.log('WebSocket disconnected');
         websocket = null;
         isConnecting = false;
-        // 切断されたら再接続ループを開始（重複チェックあり）
         startConnectionLoop();
     };
     
@@ -49,12 +60,10 @@ function connectWebSocket() {
         console.log('WebSocket connection failed');
         websocket = null;
         isConnecting = false;
-        // エラー時は再接続ループを開始しない（oncloseで処理される）
     };
 }
 
 function startConnectionLoop() {
-    // 既にループが動いていたら重複防止
     if (connectionInterval) {
         return;
     }
@@ -71,11 +80,10 @@ function initializeExtension() {
     startConnectionLoop();
 }
 
-// 以下の録画機能とイベントリスナーは変更なし
 async function startRecording(tab) {
   if (currentRecording) {
     console.log("Recording already in progress");
-    return;
+    return false; // 失敗を返す
   }
 
   const existingContexts = await chrome.runtime.getContexts({});
@@ -102,8 +110,10 @@ async function startRecording(tab) {
       target: 'offscreen',
       data: streamId
     });
+    return true; // 成功を返す
   } catch (error) {
     console.error("Failed to start recording:", error);
+    return false; // 失敗を返す
   }
 }
 
@@ -114,7 +124,9 @@ function stopRecording() {
       target: 'offscreen'
     });
     currentRecording = null;
+    return true; // 成功を返す
   }
+  return false; // 録画していない場合は失敗を返す
 }
 
 chrome.runtime.onStartup.addListener(initializeExtension);
